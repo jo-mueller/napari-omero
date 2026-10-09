@@ -12,7 +12,6 @@ import os
 
 import ezomero
 import pytest
-
 from omero.cli import CLI
 from omero.gateway import BlitzGateway
 from omero.plugins.group import GroupControl

@@ -1,5 +1,3 @@
-from typing import Optional
-
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtGui import QIcon, QImage, QPixmap
 from qtpy.QtWidgets import QListWidget, QListWidgetItem
@@ -20,8 +18,8 @@ class ThumbGrid(QListWidget):
         self.loader = None
         self.setStyleSheet("QListView {font-size: 8px; background: black};")
         self.setSpacing(4)
-        self._current_dataset: Optional[OMEROTreeItem] = None
-        self._current_item: Optional[OMEROTreeItem] = None
+        self._current_dataset: OMEROTreeItem | None = None
+        self._current_item: OMEROTreeItem | None = None
         self._item_map: dict[str, QListWidgetItem] = {}
 
     def set_item(self, item: OMEROTreeItem):
@@ -30,19 +28,17 @@ class ThumbGrid(QListWidget):
 
         self._current_item = item
 
-        dataset = None
         if item.isDataset():
-            dataset = item
+            self.set_dataset(item)
+            self.show()
         elif item.isImage():
-            dataset = item.parent()
+            # Only highlight the thumbnail if its dataset's thumbnails are
+            # already loaded (i.e. the dataset was previously selected).
+            # Selecting an image shouldn't trigger thumbnail generation
+            if item.parent() == self._current_dataset:
+                self.select_image()
         else:
             self._current_dataset = None
-
-        if dataset:
-            self.set_dataset(dataset)
-            self.show()
-        if item.isImage():
-            self.select_image()
 
     def select_image(self):
         if self._current_item is not None:

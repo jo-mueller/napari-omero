@@ -1,6 +1,5 @@
 from contextlib import contextmanager
 from math import ceil
-from typing import Optional
 
 import dask.array as da
 import numpy as np
@@ -19,7 +18,7 @@ from napari_omero.widgets import QGateWay
 
 # @timer
 def get_gateway(
-    path: str, host: Optional[str] = None, force_reconnect: bool = False
+    path: str, host: str | None = None, force_reconnect: bool = False
 ) -> BlitzGateway:
     gateway = QGateWay()
     if host:
@@ -69,9 +68,7 @@ def omero_url_reader(path: str) -> list[LayerData]:
 
 
 # @timer
-def omero_proxy_reader(
-    path: str, proxy_obj: Optional[IObject] = None
-) -> list[LayerData]:
+def omero_proxy_reader(path: str, proxy_obj: IObject | None = None) -> list[LayerData]:
     gateway = get_gateway(path)
 
     if proxy_obj.__class__.__name__.startswith("Image"):
@@ -189,6 +186,12 @@ def get_pyramid_lazy(image: ImageWrapper) -> list[da.Array]:
     image._prepareRenderingEngine()
     tile_w, tile_h = image._re.getTileSize()
 
+    # RawPixelsStore.getTile returns raw big-endian bytes; unlike the high-level
+    # PixelsWrapper.getTiles (omero/gateway/__init__.py), which decodes for us,
+    # the raw store does not, so we decode here: read with big-endian byte order
+    # and the pixels' real dtype, then hand napari a native-order array.
+    be_dtype = np.dtype(dtype).newbyteorder(">")
+
     def get_tile(tile_name):
         """tile_name is 'level,z,t,x,y,w,h'."""
         level, z, c, t, x, y, w, h = (int(n) for n in tile_name.split(","))
@@ -197,9 +200,8 @@ def get_pyramid_lazy(image: ImageWrapper) -> list[da.Array]:
             pix.setPixelsId(pix_id, False, {"omero.group": "-1"})
             pix.setResolutionLevel(level)
             tile = pix.getTile(z, c, t, x, y, w, h)
-            tile = np.frombuffer(tile, dtype=np.uint8)
-            tile = tile.reshape((h, w))
-            return tile
+            tile = np.frombuffer(tile, dtype=be_dtype).reshape((h, w))
+            return tile.astype(dtype, copy=False)
 
     lazy_reader = delayed(get_tile)
 
@@ -388,7 +390,7 @@ def omero_color_to_hex(color_val) -> str:
     return hexa_decimal
 
 
-def parse_omero_shape(shape) -> Optional[LayerData]:
+def parse_omero_shape(shape) -> LayerData | None:
     """Convert an OMERO shape into a Napari-compatible format."""
     shape_type = shape.__class__.__name__
     if shape_type == "RectangleI":
