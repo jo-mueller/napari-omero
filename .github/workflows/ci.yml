@@ -80,10 +80,10 @@ jobs:
           ref: c8a0015b0ce72ee0a49e6968af33de10ea00bc77 # master as of 2025-12
       - name: Start OMERO
         run: |
-          # fixed host ports, so pytest can reach localhost:4064 (default is random)
+          # fixed host port, so pytest can reach localhost:4064 (default is random)
           echo 'OMERO_SERVER_SSL=4064:' >> .omero/.env
-          echo 'OMERO_WEB_PORT=4080:' >> .omero/.env
-          .omero/compose up -d
+          # server + database only; the tests don't use OMERO.web
+          .omero/compose up -d db omero
       - uses: pyvista/setup-headless-display-action@v5
         with:
           qt: true
