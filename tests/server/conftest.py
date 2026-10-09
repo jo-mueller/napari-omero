@@ -9,8 +9,11 @@
 #
 # Note that these fixtures are only used for the OMERO server tests.
 import os
+import socket
+import time
 
 import ezomero
+import numpy as np
 import pytest
 from omero.cli import CLI
 from omero.gateway import BlitzGateway
@@ -70,7 +73,6 @@ def pytest_addoption(parser):
     )
 
 
-# we can change this later
 @pytest.fixture(scope="session")
 def omero_params(request):
     user = request.config.getoption("--omero-user")
@@ -89,120 +91,97 @@ def omero_params(request):
     return (user, password, host, web_host, port, secure)
 
 
-@pytest.fixture(scope="session")
-def users_groups(conn, omero_params):
-    session_uuid = conn.getSession().getUuid().val
-    user = omero_params[0]
-    host = omero_params[2]
-    port = str(omero_params[4])
-    cli = CLI()
-    cli.register("sessions", SessionsControl, "test")
-    cli.register("user", UserControl, "test")
-    cli.register("group", GroupControl, "test")
+@pytest.fixture(scope="session", autouse=True)
+def _require_server(omero_params):
+    """Skip the server tests when no OMERO server is reachable.
 
-    group_info = []
-    for gname, gperms in GROUPS_TO_CREATE:
-        cli.invoke(
-            [
-                "group",
-                "add",
-                gname,
-                "--type",
-                gperms,
-                "-k",
-                session_uuid,
-                "-u",
-                user,
-                "-s",
-                host,
-                "-p",
-                port,
-            ]
-        )
-        gid = ezomero.get_group_id(conn, gname)
-        group_info.append([gname, gid])
-
-    user_info = []
-    for user, groups_add, groups_own in USERS_TO_CREATE:
-        # make user while adding to first group
-        cli.invoke(
-            [
-                "user",
-                "add",
-                user,
-                "test",
-                "tester",
-                "--group-name",
-                groups_add[0],
-                "-e",
-                "useremail@jax.org",
-                "-P",
-                "abc123",
-                "-k",
-                session_uuid,
-                "-u",
-                user,
-                "-s",
-                host,
-                "-p",
-                port,
-            ]
-        )
-
-        # add user to rest of groups
-        if len(groups_add) > 1:
-            for group in groups_add[1:]:
-                cli.invoke(
-                    [
-                        "group",
-                        "adduser",
-                        "--user-name",
-                        user,
-                        "--name",
-                        group,
-                        "-k",
-                        session_uuid,
-                        "-u",
-                        user,
-                        "-s",
-                        host,
-                        "-p",
-                        port,
-                    ]
-                )
-
-        # make user owner of listed groups
-        if len(groups_own) > 0:
-            for group in groups_own:
-                cli.invoke(
-                    [
-                        "group",
-                        "adduser",
-                        "--user-name",
-                        user,
-                        "--name",
-                        group,
-                        "--as-owner",
-                        "-k",
-                        session_uuid,
-                        "-u",
-                        user,
-                        "-s",
-                        host,
-                        "-p",
-                        port,
-                    ]
-                )
-        uid = ezomero.get_user_id(conn, user)
-        user_info.append([user, uid])
-
-    return (group_info, user_info)
+    Set OMERO_REQUIRE_SERVER=1 (as CI does) to fail instead, so a server that
+    never came up can't turn the job green by skipping every test.
+    """
+    _user, _password, host, _web_host, port, _secure = omero_params
+    try:
+        socket.create_connection((host, int(port)), timeout=2).close()
+    except OSError:
+        msg = f"no OMERO server reachable at {host}:{port}"
+        if os.environ.get("OMERO_REQUIRE_SERVER"):
+            pytest.fail(msg)
+        pytest.skip(msg)
 
 
 @pytest.fixture(scope="session")
 def conn(omero_params):
     user, password, host, _web_host, port, secure = omero_params
-    conn = BlitzGateway(user, password, host=host, port=port, secure=secure)
-    conn.connect()
+    # a freshly started server can accept connections before logins work,
+    # so retry a few times before giving up
+    for attempt in range(5):
+        conn = BlitzGateway(user, password, host=host, port=port, secure=secure)
+        if conn.connect():
+            break
+        time.sleep(2 * (attempt + 1))
+    else:
+        pytest.fail(f"could not log in to OMERO at {host}:{port} as {user}")
     yield conn
     conn.close()
+
+
+@pytest.fixture(scope="session")
+def users_groups(conn, omero_params):
+    """Create the test groups and users (as the admin); return their ids.
+
+    Not used yet; for tests of group switching, owner filters and
+    cross-group saves.
+    """
+    admin = omero_params[0]
+    host = omero_params[2]
+    port = str(omero_params[4])
+    login = ["-k", conn.getSession().getUuid().val, "-u", admin, "-s", host]
+    login += ["-p", port]
+    cli = CLI()
+    cli.register("sessions", SessionsControl, "test")
+    cli.register("user", UserControl, "test")
+    cli.register("group", GroupControl, "test")
+
+    def omero(*args):
+        # strict: raise on failure instead of silently continuing
+        cli.invoke([*args, *login], strict=True)
+
+    group_info = []
+    for gname, gperms in GROUPS_TO_CREATE:
+        omero("group", "add", gname, "--type", gperms)
+        group_info.append([gname, ezomero.get_group_id(conn, gname)])
+
+    user_info = []
+    for username, groups_add, groups_own in USERS_TO_CREATE:
+        # make user while adding to first group
+        omero(
+            "user", "add", username, "test", "tester",
+            "--group-name", groups_add[0],
+            "-e", "useremail@jax.org", "-P", "abc123",
+        )  # fmt: skip
+        # add user to rest of groups
+        for group in groups_add[1:]:
+            omero("group", "adduser", "--user-name", username, "--name", group)
+        # make user owner of listed groups
+        for group in groups_own:
+            omero(
+                "group", "adduser", "--user-name", username, "--name", group,
+                "--as-owner",
+            )  # fmt: skip
+        user_info.append([username, ezomero.get_user_id(conn, username)])
+
+    return (group_info, user_info)
+
+
+@pytest.fixture(scope="session")
+def image_array():
+    """Small uint16 XYZCT array (ezomero's order) of unique values."""
+    shape = (32, 24, 3, 2, 2)  # x, y, z, c, t
+    return np.arange(np.prod(shape), dtype=np.uint16).reshape(shape)
+
+
+@pytest.fixture(scope="session")
+def image_id(conn, image_array):
+    """Post `image_array` to OMERO as a new image; delete it afterwards."""
+    image_id = ezomero.post_image(conn, image_array, "napari-omero test image")
+    yield image_id
+    conn.deleteObjects("Image", [image_id], deleteAnns=True, wait=True)

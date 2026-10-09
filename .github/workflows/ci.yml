@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
-      - run: uv run --upgrade pytest tests/local --color=yes
+      - run: uv run --upgrade pytest --color=yes
 
   test-pixi:
     name: pixi ${{ matrix.os }} ${{ matrix.env }}
@@ -63,56 +63,42 @@ jobs:
         with:
           run-install: false
       - run: pixi update -e ${{ matrix.env }} # latest deps instead of pixi.lock
-      - run: pixi run -e ${{ matrix.env }} test tests/local --color=yes
+      - run: pixi run -e ${{ matrix.env }} test --color=yes
 
-  # Integration tests against a real, containerized OMERO server.
-  # Kept as a separate job (single OS + Python) so the server stack is only
-  # started once, rather than across the full test matrix.
+  # Integration tests against a real OMERO server (tests/server). One job, so
+  # the server stack starts once. omero-test-infra only provides the server;
+  # pytest runs on the host with the same uv setup as test-uv.
   test-server:
     name: server tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash -l {0}
     steps:
-      - uses: actions/checkout@v6
-      - uses: conda-incubator/setup-miniconda@v3
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          miniforge-version: "latest"
-          python-version: "3.12"
-
-      # the server test for the browser widget needs a Qt backend + display
-      - uses: pyvista/setup-headless-display-action@v4
-        with:
-          qt: true
-
-      - name: Install dependencies
+          repository: ome/omero-test-infra
+          path: .omero
+          ref: c8a0015b0ce72ee0a49e6968af33de10ea00bc77 # master as of 2025-12
+      - name: Start OMERO
         run: |
-          conda install omero-py
-          python -m pip install --upgrade pip
-          python -m pip install .[test]
-          python -m pip install PyQt5
-
-      - name: Set up OMERO server
-        run: |
-          # omero-test-infra is used only to stand up a server stack (compose up);
-          # Pinned to latest commit: Dec 2025
-          git clone https://github.com/ome/omero-test-infra .omero
-          git -C .omero checkout c8a0015b0ce72ee0a49e6968af33de10ea00bc77
-          # Bind the server/web ports to fixed host ports so the host-side tests
-          # can reach localhost:4064 / :4080 (compose defaults to random ports).
-          # see also: https://github.com/ome/omero-test-infra/issues/77
+          # fixed host ports, so pytest can reach localhost:4064 (default is random)
           echo 'OMERO_SERVER_SSL=4064:' >> .omero/.env
           echo 'OMERO_WEB_PORT=4080:' >> .omero/.env
           .omero/compose up -d
-          .omero/wait-on-login
-
-      - name: Test (server)
-        run: pytest ./tests/server --color=yes --cov=napari_omero --cov-report=xml
+      - uses: pyvista/setup-headless-display-action@v5
+        with:
+          qt: true
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv run python .omero/wait-on-login
+      - run: uv run --upgrade pytest tests/server --color=yes
+        env:
+          OMERO_REQUIRE_SERVER: "1" # fail, not skip, if the server isn't up
 
   deploy:
     # runs when a tag starting with "v" is pushed; publishes via PyPI trusted publishing
-    needs: [test-uv, test-pixi, test-server]
+    needs: [test-uv, test-pixi]
     if: success() && startsWith(github.ref, 'refs/tags/') && github.repository == 'ome/napari-omero'
     runs-on: ubuntu-latest
     permissions:
