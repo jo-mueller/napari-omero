@@ -21,15 +21,14 @@ from omero.plugins.group import GroupControl
 from omero.plugins.sessions import SessionsControl
 from omero.plugins.user import UserControl
 
-# Settings for the OMERO *test* server. These tests post, delete and create
-# users/groups, so they read their own OMERO_TEST_* variables and never the
+# Settings for the OMERO *test* server, overridable with OMERO_TEST_USER,
+# OMERO_TEST_PASS, OMERO_TEST_HOST, OMERO_TEST_PORT and OMERO_TEST_SECURE.
+# These tests post, delete and create users/groups, so they never read the
 # generic OMERO_HOST/OMERO_USER, which may point at a real server.
 DEFAULT_OMERO_USER = "root"
 DEFAULT_OMERO_PASS = "omero"
 DEFAULT_OMERO_HOST = "localhost"
-DEFAULT_OMERO_WEB_HOST = "http://localhost:4080"
 DEFAULT_OMERO_PORT = "4064"
-DEFAULT_OMERO_SECURE = True
 
 # [[group, permissions], ...]
 GROUPS_TO_CREATE = [["test_group_1", "read-only"], ["test_group_2", "read-only"]]
@@ -42,55 +41,31 @@ USERS_TO_CREATE = [
 ]
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--omero-user",
-        action="store",
-        default=os.environ.get("OMERO_TEST_USER", DEFAULT_OMERO_USER),
-    )
-    parser.addoption(
-        "--omero-pass",
-        action="store",
-        default=os.environ.get("OMERO_TEST_PASS", DEFAULT_OMERO_PASS),
-    )
-    parser.addoption(
-        "--omero-host",
-        action="store",
-        default=os.environ.get("OMERO_TEST_HOST", DEFAULT_OMERO_HOST),
-    )
-    parser.addoption(
-        "--omero-web-host",
-        action="store",
-        default=os.environ.get("OMERO_TEST_WEB_HOST", DEFAULT_OMERO_WEB_HOST),
-    )
-    parser.addoption(
-        "--omero-port",
-        action="store",
-        default=os.environ.get("OMERO_TEST_PORT", DEFAULT_OMERO_PORT),
-    )
-    parser.addoption(
-        "--omero-secure",
-        action="store",
-        default=os.environ.get("OMERO_TEST_SECURE", DEFAULT_OMERO_SECURE),
-    )
-
-
 @pytest.fixture(scope="session")
-def omero_params(request):
-    user = request.config.getoption("--omero-user")
-    password = request.config.getoption("--omero-pass")
-    host = request.config.getoption("--omero-host")
-    web_host = request.config.getoption("--omero-web-host")
-    port = request.config.getoption("--omero-port")
-    secure_opt = request.config.getoption("--omero-secure")
-    # the option default is a real bool, but an OMERO_TEST_SECURE env var arrives as
-    # a string ("0"/"false" should mean False), so coerce explicitly.
-    secure = (
-        secure_opt
-        if isinstance(secure_opt, bool)
-        else str(secure_opt).strip().lower() in ("1", "true", "yes")
+def omero_params():
+    """(user, password, host, port, secure) for the test server."""
+    env = os.environ.get
+    secure = env("OMERO_TEST_SECURE", "1").strip().lower() in ("1", "true", "yes")
+    return (
+        env("OMERO_TEST_USER", DEFAULT_OMERO_USER),
+        env("OMERO_TEST_PASS", DEFAULT_OMERO_PASS),
+        env("OMERO_TEST_HOST", DEFAULT_OMERO_HOST),
+        env("OMERO_TEST_PORT", DEFAULT_OMERO_PORT),
+        secure,
     )
-    return (user, password, host, web_host, port, secure)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_omero_userdir(tmp_path_factory):
+    """Keep test logins out of the developer's real ~/omero/sessions.
+
+    The browser widget restores the *current* saved session on start-up and
+    saves new logins as current. Without this, a local run could reconnect to
+    a real server, or leave the test login as the default afterwards.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OMERO_USERDIR", str(tmp_path_factory.mktemp("omero_userdir")))
+        yield
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -100,7 +75,7 @@ def _require_server(omero_params):
     Set OMERO_TEST_REQUIRE_SERVER=1 (as CI does) to fail instead, so a server that
     never came up can't turn the job green by skipping every test.
     """
-    _user, _password, host, _web_host, port, _secure = omero_params
+    _user, _password, host, port, _secure = omero_params
     try:
         socket.create_connection((host, int(port)), timeout=2).close()
     except OSError:
@@ -112,7 +87,7 @@ def _require_server(omero_params):
 
 @pytest.fixture(scope="session")
 def conn(omero_params):
-    user, password, host, _web_host, port, secure = omero_params
+    user, password, host, port, secure = omero_params
     # a freshly started server can accept connections before logins work,
     # so retry a few times before giving up
     for attempt in range(5):
@@ -133,11 +108,9 @@ def users_groups(conn, omero_params):
     Not used yet; for tests of group switching, owner filters and
     cross-group saves.
     """
-    admin = omero_params[0]
-    host = omero_params[2]
-    port = str(omero_params[4])
+    admin, _password, host, port, _secure = omero_params
     login = ["-k", conn.getSession().getUuid().val, "-u", admin, "-s", host]
-    login += ["-p", port]
+    login += ["-p", str(port)]
     cli = CLI()
     cli.register("sessions", SessionsControl, "test")
     cli.register("user", UserControl, "test")
