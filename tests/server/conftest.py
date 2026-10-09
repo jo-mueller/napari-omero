@@ -21,7 +21,9 @@ from omero.plugins.group import GroupControl
 from omero.plugins.sessions import SessionsControl
 from omero.plugins.user import UserControl
 
-# Settings for OMERO
+# Settings for the OMERO *test* server. These tests post, delete and create
+# users/groups, so they read their own OMERO_TEST_* variables and never the
+# generic OMERO_HOST/OMERO_USER, which may point at a real server.
 DEFAULT_OMERO_USER = "root"
 DEFAULT_OMERO_PASS = "omero"
 DEFAULT_OMERO_HOST = "localhost"
@@ -44,32 +46,32 @@ def pytest_addoption(parser):
     parser.addoption(
         "--omero-user",
         action="store",
-        default=os.environ.get("OMERO_USER", DEFAULT_OMERO_USER),
+        default=os.environ.get("OMERO_TEST_USER", DEFAULT_OMERO_USER),
     )
     parser.addoption(
         "--omero-pass",
         action="store",
-        default=os.environ.get("OMERO_PASS", DEFAULT_OMERO_PASS),
+        default=os.environ.get("OMERO_TEST_PASS", DEFAULT_OMERO_PASS),
     )
     parser.addoption(
         "--omero-host",
         action="store",
-        default=os.environ.get("OMERO_HOST", DEFAULT_OMERO_HOST),
+        default=os.environ.get("OMERO_TEST_HOST", DEFAULT_OMERO_HOST),
     )
     parser.addoption(
         "--omero-web-host",
         action="store",
-        default=os.environ.get("OMERO_WEB_HOST", DEFAULT_OMERO_WEB_HOST),
+        default=os.environ.get("OMERO_TEST_WEB_HOST", DEFAULT_OMERO_WEB_HOST),
     )
     parser.addoption(
         "--omero-port",
         action="store",
-        default=os.environ.get("OMERO_PORT", DEFAULT_OMERO_PORT),
+        default=os.environ.get("OMERO_TEST_PORT", DEFAULT_OMERO_PORT),
     )
     parser.addoption(
         "--omero-secure",
         action="store",
-        default=os.environ.get("OMERO_SECURE", DEFAULT_OMERO_SECURE),
+        default=os.environ.get("OMERO_TEST_SECURE", DEFAULT_OMERO_SECURE),
     )
 
 
@@ -81,7 +83,7 @@ def omero_params(request):
     web_host = request.config.getoption("--omero-web-host")
     port = request.config.getoption("--omero-port")
     secure_opt = request.config.getoption("--omero-secure")
-    # the option default is a real bool, but an OMERO_SECURE env var arrives as
+    # the option default is a real bool, but an OMERO_TEST_SECURE env var arrives as
     # a string ("0"/"false" should mean False), so coerce explicitly.
     secure = (
         secure_opt
@@ -95,7 +97,7 @@ def omero_params(request):
 def _require_server(omero_params):
     """Skip the server tests when no OMERO server is reachable.
 
-    Set OMERO_REQUIRE_SERVER=1 (as CI does) to fail instead, so a server that
+    Set OMERO_TEST_REQUIRE_SERVER=1 (as CI does) to fail instead, so a server that
     never came up can't turn the job green by skipping every test.
     """
     _user, _password, host, _web_host, port, _secure = omero_params
@@ -103,7 +105,7 @@ def _require_server(omero_params):
         socket.create_connection((host, int(port)), timeout=2).close()
     except OSError:
         msg = f"no OMERO server reachable at {host}:{port}"
-        if os.environ.get("OMERO_REQUIRE_SERVER"):
+        if os.environ.get("OMERO_TEST_REQUIRE_SERVER"):
             pytest.fail(msg)
         pytest.skip(msg)
 

@@ -94,7 +94,7 @@ jobs:
       - run: uv run python .omero/wait-on-login
       - run: uv run --upgrade pytest tests/server --color=yes
         env:
-          OMERO_REQUIRE_SERVER: "1" # fail, not skip, if the server isn't up
+          OMERO_TEST_REQUIRE_SERVER: "1" # fail, not skip, if the server isn't up
 
   deploy:
     # runs when a tag starting with "v" is pushed; publishes via PyPI trusted publishing
